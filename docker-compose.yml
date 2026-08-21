@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: hrtaxapp-postgres
+    environment:
+      POSTGRES_DB: hrtaxapp
+      POSTGRES_USER: hrtaxapp
+      POSTGRES_PASSWORD: hrtaxapp
+    ports:
+      - "5432:5432"
+    volumes:
+      - hrtaxapp-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hrtaxapp -d hrtaxapp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    container_name: hrtaxapp-backend
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: hrtaxapp
+      DB_USER: hrtaxapp
+      DB_PASSWORD: hrtaxapp
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: hrtaxapp-frontend
+    ports:
+      - "8081:80"
+    depends_on:
+      - backend
+
+volumes:
+  hrtaxapp-pgdata:

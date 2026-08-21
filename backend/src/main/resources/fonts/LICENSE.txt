@@ -1,0 +1,10 @@
+Liberation Sans (Regular, Bold)
+Licenca: SIL Open Font License 1.1 (https://scripts.sil.org/OFL)
+Izvor: paket fonts-liberation (Red Hat / Liberation Fonts Project)
+
+Koristi se za generiranje PDF izvjestaja (JoppdPdfExportService) jer, za
+razliku od PDFBox-ovih ugradenih Base14 fontova (Helvetica i sl.), Liberation
+Sans podrzava hrvatske dijakriticke znakove (č, ć, đ, š, ž).
+
+SIL OFL dopusta slobodno koristenje, izmjenu i distribuciju (ukljucujuci
+ugradnju u aplikacije) - nema dodatnih ogranicenja relevantnih za ovaj projekt.
