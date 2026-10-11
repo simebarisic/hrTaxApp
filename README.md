@@ -30,10 +30,13 @@ Ovo diže Postgres + backend + frontend zajedno:
 - Frontend: `http://localhost:8081`
 - Backend API: `http://localhost:8080`
 - Postgres: `localhost:5432`
+(sve samo na localhostu — vidi "Sigurnost")
 
 Shema baze se automatski kreira preko Flyway migracija pri prvom
 pokretanju backenda. Za zaustavljanje: `docker compose down` (dodaj
 `-v` ako želiš obrisati i podatke iz baze).
+
+Prvo: `cp .env.example .env` i postavi `DB_PASSWORD`.
 
 Za razvoj je često zgodnije pokrenuti **samo Postgres** u Dockeru, a
 backend/frontend lokalno s hot-reloadom (vidi sekcije ispod) —
@@ -57,6 +60,7 @@ imaju drugačiji porezni tretman u RH, nisu "financijska imovina" iz
 | Trading212 | ✅ | ⚠️ eksperimentalno | CSV verificiran na stvarnim podacima |
 | Revolut | ✅ | ❌ | Verificiran na stvarnom "Tax Report" exportu |
 | IBKR | ⚠️ neverificirano | ❌ | CSV parser za Flex Query, nije testiran na pravom exportu |
+| Strike (Bitcoin) | ⚠️ neverificirano | ❌ | CSV transakcija; vidi sekciju "Bitcoin (Strike)" |
 
 **Kako doći do exporta po brokeru:**
 - **Trading212 CSV**: Menu → History → Export (vidi gore)
@@ -74,15 +78,72 @@ imaju drugačiji porezni tretman u RH, nisu "financijska imovina" iz
   Trenutno se obrađuju samo dionice/ETF-ovi (AssetCategory=STK); opcije/futures
   se preskaču.
 
-**Važno za Revolut i IBKR:** iznosi u izvornoj valuti (npr. USD) se TRENUTNO NE
-konvertiraju u EUR (za razliku od Trading212 koji ih šalje već pretvorene) —
-aplikacija to javlja kao upozorenje u odgovoru. Porezna osnovica za takve
-transakcije treba ručnu provjeru dok se ne doda prava HNB konverzija po danu
-transakcije.
+**Valute:** Revolut, IBKR i Strike (ako je u USD) se pretvaraju u EUR HNB tečajem na dan transakcije.
+Trading212 "Total" se pretvara HNB tečajem samo ako stupac `Currency (Total)` nije EUR (npr. GBP/USD račun).
+Ako konverzija ne uspije (HNB nedostupan, nepoznat tečaj, **datum prije 2023.** kad HNB EUR-lista ne postoji),
+transakcija se **ne sprema** nego ide u **Karantenu** s razlogom — umjesto da se sirov iznos tiho tretira kao EUR.
 
 Za IBKR, kao i kod Trading212-a i Revoluta u početku, prva runda testiranja na
 stvarnom exportu vjerojatno će zahtijevati podešavanje naziva kolona/formata
 datuma u parseru — to je očekivano, ne znak da je arhitektura loša.
+
+## Bitcoin (Strike)
+
+Prodaja Bitcoina je porezni događaj i ulazi u isti obračun kao dionice (FIFO, 12%, izuzeće nakon 2 godine,
+netiranje dobitaka/gubitaka unutar godine **zajedno s dionicama**).
+
+- **Upload**: odaberi "Strike (Bitcoin)" i uploadaj CSV export transakcija. `StrikeCsvParser` traži stupce po
+  nazivu (vrijeme, vrsta transakcije, iznos u BTC, iznos u EUR/USD, naknada, ID, status).
+  Purchase/Buy → BUY, Sale/Sell → SELL; vrijeme se pretvara iz UTC u hrvatsko vrijeme.
+- **Cold wallet**: prijenos Strike → cold wallet (i natrag) **nije porezni događaj** — Withdrawal/Deposit/Send/
+  Receive se preskaču. FIFO za kripto koristi **jedan zajednički pool** ("CRYPTO") neovisno o platformi, pa BTC
+  kupljen na Strikeu, prebačen na wallet i vraćen na Strike radi prodaje zadržava izvorni datum i cijenu nabave.
+- **Naknada**: `app.strike.fee-included-in-amount` (env `APP_STRIKE_FEE_INCLUDED_IN_AMOUNT`, default `true`).
+  `true` = "Amount EUR" već sadrži naknadu; `false` = kod kupnje se naknada dodaje, kod prodaje oduzima.
+  **Provjeri na jednoj stvarnoj transakciji** (EUR amount vs. BTC × cijena) i po potrebi promijeni.
+- **Ručni unos**: ako CSV format ne prolazi ili je BTC kupljen izvan Strikea (burza, P2P), koristi "Ručni unos"
+  u UI-ju (`POST /api/reports/transactions`, brisanje `DELETE /api/reports/transactions/{id}`). Unosi se UKUPNO u EUR.
+- **Upozorenja**: ako prodaješ više BTC-a nego što je evidentirano kupljeno, prikazuje se upozorenje (nedostaje
+  povijest kupnji, npr. BTC kupljen prije Strikea ili primljen na wallet).
+- **Ograničenja**: slanje BTC-a trećoj osobi / plaćanje BTC-om je tehnički raspolaganje imovinom, ali se u exportu ne
+  razlikuje od prijenosa na vlastiti wallet pa se preskače; on-chain naknade za prijenos (mali iznosi satoshija) se
+  ne obračunavaju; zamjena kripto → kripto (npr. BTC → ETH) nije podržana. **Format Strike exporta nije
+  verificiran na stvarnim podacima** — ako nešto ne prođe, pogledaj Karantenu ili pošalji zaglavlje + par redaka.
+- Porezni tretman kriptoimovine (stopa, FIFO, izuzeće nakon 2 godine, rok prijave) **provjeri s knjigovođom**.
+
+## Sigurnost
+
+Aplikacija **nema autentikaciju**, a drži stvarne financijske podatke.
+
+- `docker-compose.yml` veže Postgres (5432), backend (8080) i frontend (8081) **samo na 127.0.0.1**.
+- Lozinka baze se čita iz `.env` (kopiraj `.env.example` → `.env`); compose se neće pokrenuti bez `DB_PASSWORD`.
+- Za pristup s drugog uređaja (npr. Raspberry Pi homelab): postavi `FRONTEND_BIND=0.0.0.0` u `.env` **i** uključi
+  basic auth: `./scripts/create-htpasswd.sh <korisnik>` pa
+  `docker compose -f docker-compose.yml -f docker-compose.auth.yml up -d --build`.
+  Basic auth bez TLS-a šalje lozinku u čistom tekstu — za pristup izvan kućne mreže koristi VPN (npr. WireGuard)
+  ili reverse proxy s TLS-om.
+
+## Napomena o vremenskoj zoni (promjena ponašanja)
+
+Trading212 i Strike izvoze vrijeme u UTC; parser ga sada pretvara u **Europe/Zagreb** prije nego što se određuje
+porezna godina i granica od 2 godine (npr. prodaja 31.12. u 23:30 UTC je već 1.1. u Hrvatskoj).
+**Podaci spremljeni prije ove izmjene imaju UTC vrijeme.** Deduplikacija po ID-u sprječava da ih ponovni upload
+ispravi, pa ih treba obrisati i uvesti ponovno:
+
+```bash
+docker exec -it hrtaxapp-postgres psql -U hrtaxapp -d hrtaxapp -c "TRUNCATE transactions;"
+```
+(prvo napravi `./scripts/backup-db.sh`). Ručne unose i Trading212 PDF treba provjeriti zasebno — PDF parser
+vrijeme ne pretvara.
+
+## Na što paziti prije predaje (pravna pitanja za knjigovođu)
+
+- FIFO se za dionice/ETF-ove vodi **po brokeru**; za kripto u jednom zajedničkom poolu. Provjeri što Porezna
+  uprava očekuje (pool preko brokera ili odvojeno).
+- Stopa (12%), prijenos gubitaka (ne prenose se), tečaj za pretvorbu (HNB na dan kupnje i prodaje, a ne tečaj
+  brokera) i rok JOPPD-a (u kodu približno 28.2.) — provjeri aktualne propise.
+- Dividende se spremaju ali **ne oporezuju** u ovom obračunu.
+- Korporativne akcije (split, spin-off, spajanje) se ne obrađuju; Trading212 ih sada šalje u Karantenu.
 
 ## Pokretanje baze (Postgres) — za lokalni razvoj bez punog Docker stacka
 
@@ -189,10 +250,9 @@ već šalje pretvorene).
 - **Keširanje**: svaki (valuta, datum) par se sprema u tablicu
   `exchange_rates` nakon prvog dohvata — sljedeći upload s istim datumima ne
   zove HNB ponovno.
-- **Fallback**: ako HNB API ne odgovori (mreža, timeout, nepoznata valuta),
-  koristi se SIROV (nekonvertiran) iznos, a `Transaction.exchangeRateToEur`
-  se postavlja na `ZERO` kao signal "konverzija nije uspjela" — pojavljuje
-  se kao jasno upozorenje u odgovoru (`ReportController.buildWarnings`).
+- **Neuspjeh**: ako HNB API ne odgovori (mreža, timeout, nepoznata valuta, datum prije 2023.),
+  parser postavlja `exchangeRateToEur = 0` kao signal, a `ReportController` takvu transakciju
+  (i cijeli par ako je pred-uparen lot) **ne sprema** nego prikaže u Karanteni.
 - **NAPOMENA O TESTIRANJU**: HNB API poziv **nije mogao biti testiran uživo**
   iz ovog razvojnog okruženja (nema mrežnog pristupa `api.hnb.hr` odavde).
   Parametri upita (`valuta`, `datum-primjene-od/do`) su bazirani na
@@ -203,11 +263,8 @@ već šalje pretvorene).
   exporta s ne-EUR transakcijama je pravi test**. Ako se pojavi upozorenje
   "NIJE uspjelo konvertirati", to je znak da treba provjeriti/prilagoditi
   parametre u `HnbExchangeRateService.fetchFromHnb()`.
-- Poznata sitnica: `upload` endpoint drži DB transakciju otvorenu tijekom
-  cijelog parsiranja, uključujući HNB HTTP pozive — za prvi upload s puno
-  različitih (valuta, datum) kombinacija ovo može malo produžiti trajanje
-  transakcije. Nije blokirajuće za osobnu upotrebu, ali je prostor za
-  optimizaciju (parsiranje izvan transakcijske granice) kod većeg volumena.
+- `upload` endpoint **nije** `@Transactional` (parsiranje s HNB pozivima ne drži DB transakciju);
+  spremanje je jedan `saveAll`.
 
 ## Poznata ograničenja / za sljedeće korake
 
@@ -216,6 +273,8 @@ već šalje pretvorene).
   su verificirani na stvarnim podacima; IBKR CSV i Trading212 PDF još nisu.
 - IBKR parser trenutno obrađuje samo dionice/ETF-ove (AssetCategory=STK);
   opcije/futures/forex se preskaču bez upozorenja u odgovoru.
+- Nedovoljna povijest kupnji (prodaja bez kupnje u istom poolu) se sada prijavljuje **po brokeru/poolu** u
+  Upozorenjima, a ta količina nije u obračunu.
 - Trading212 PDF parser očekuje da PDFBox izvuče svaki red tablice kao
   jednu liniju teksta - ako se stvarni PDF layout razlomi drugacije
   (npr. redak prelomljen na vise linija), nece pronaci transakcije.

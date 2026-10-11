@@ -156,4 +156,108 @@ class FifoAndTaxCalculationTest {
         assertTrue(byBroker.containsKey(BrokerType.TRADING212));
         assertFalse(byBroker.containsKey(BrokerType.REVOLUT));
     }
+
+    @Test
+    void granicaDvijeGodine_tocnoDvijeGodineJeJosOporezivo_danKasnijeIzuzeto() {
+        var b = buy("G", LocalDateTime.of(2023, 5, 10, 10, 0), "2", "100");
+        var sOnBoundary = sell("G", LocalDateTime.of(2025, 5, 10, 10, 0), "1", "100");
+        var sAfter = sell("G", LocalDateTime.of(2025, 5, 11, 10, 0), "1", "100");
+
+        List<MatchedLot> matches = fifoService.match(List.of(b, sOnBoundary, sAfter));
+
+        assertEquals(2, matches.size());
+        assertFalse(matches.get(0).isExemptOverTwoYears()); // tocno 2 godine
+        assertTrue(matches.get(1).isExemptOverTwoYears());  // dan nakon
+    }
+
+    @Test
+    void granicaDvijeGodine_prijestupniDan() {
+        // kupljeno 29.2.2024 -> +2 god = 28.2.2026 (LocalDate.plusYears)
+        var b = buy("H", LocalDateTime.of(2024, 2, 29, 10, 0), "2", "100");
+        var s1 = sell("H", LocalDateTime.of(2026, 2, 28, 10, 0), "1", "100");
+        var s2 = sell("H", LocalDateTime.of(2026, 3, 1, 10, 0), "1", "100");
+
+        List<MatchedLot> matches = fifoService.match(List.of(b, s1, s2));
+
+        assertFalse(matches.get(0).isExemptOverTwoYears());
+        assertTrue(matches.get(1).isExemptOverTwoYears());
+    }
+
+    @Test
+    void istiTrenutak_kupnjaSeObradujePrijeProdajeNeovisnoOUlaznomRedoslijedu() {
+        LocalDateTime t = LocalDateTime.of(2025, 4, 1, 10, 0);
+        var s = sell("I", t, "1", "150");
+        var b = buy("I", t, "1", "100");
+
+        // SELL je prvi u ulaznoj listi, ali BUY u istom trenutku mora biti obradjen prvi
+        var result = fifoService.matchWithDiagnostics(List.of(s, b));
+
+        assertEquals(1, result.lots().size());
+        assertTrue(result.shortfalls().isEmpty());
+    }
+
+    @Test
+    void manjakKupnjeSeJavljaPoBrokeru_viseKodDrugogBrokeraGaNeSakriva() {
+        // Kupnja 5 kod Revoluta, prodaja 5 kod Trading212 (transfer): zbroj po ISIN-u bi izgledao uredno,
+        // ali kod Trading212 nema kupnje -> mora biti prijavljeno.
+        var b = buy("J", LocalDateTime.of(2025, 1, 1, 0, 0), "5", "50", BrokerType.REVOLUT);
+        var s = sell("J", LocalDateTime.of(2025, 6, 1, 0, 0), "5", "100", BrokerType.TRADING212);
+
+        var result = fifoService.matchWithDiagnostics(List.of(b, s));
+
+        assertTrue(result.lots().isEmpty());
+        assertEquals(1, result.shortfalls().size());
+        assertEquals("TRADING212", result.shortfalls().get(0).pool());
+        assertEquals(0, new BigDecimal("5").compareTo(result.shortfalls().get(0).quantity()));
+    }
+
+    @Test
+    void djelomicniManjak_uparujeDostupnoIJavljaOstatak() {
+        var b = buy("K", LocalDateTime.of(2025, 1, 1, 0, 0), "3", "30");
+        var s = sell("K", LocalDateTime.of(2025, 6, 1, 0, 0), "5", "100");
+
+        var result = fifoService.matchWithDiagnostics(List.of(b, s));
+
+        assertEquals(1, result.lots().size());
+        assertEquals(0, new BigDecimal("2").compareTo(result.shortfalls().get(0).quantity()));
+    }
+
+    @Test
+    void bitcoin_prodajaPostajePorezniDogadjaj_12posto() {
+        // BTC kupljen preko Strikea, prodan preko Strikea; ticker BTC, bez ISIN-a
+        var b = buy("BTC", LocalDateTime.of(2025, 2, 1, 10, 0), "0.1", "5000", BrokerType.STRIKE);
+        var s = sell("BTC", LocalDateTime.of(2025, 9, 1, 10, 0), "0.1", "6000", BrokerType.STRIKE);
+
+        List<TaxYearSummary> summaries = taxService.calculate(fifoService.match(List.of(b, s)));
+
+        assertEquals(1, summaries.size());
+        assertEquals(0, new BigDecimal("1000.00").compareTo(summaries.get(0).getNetTaxableBaseEur()));
+        assertEquals(0, new BigDecimal("120.00").compareTo(summaries.get(0).getTaxDueEur()));
+    }
+
+    @Test
+    void bitcoin_viseKupnjiDjelomicnaProdajaFifo() {
+        var b1 = buy("BTC", LocalDateTime.of(2025, 1, 1, 0, 0), "0.1", "4000", BrokerType.STRIKE); // 40k/BTC
+        var b2 = buy("BTC", LocalDateTime.of(2025, 3, 1, 0, 0), "0.1", "6000", BrokerType.STRIKE); // 60k/BTC
+        var s = sell("BTC", LocalDateTime.of(2025, 9, 1, 0, 0), "0.15", "10500", BrokerType.STRIKE); // 70k/BTC
+
+        List<MatchedLot> lots = fifoService.match(List.of(b1, b2, s));
+
+        assertEquals(2, lots.size());
+        // 0.1 @ 40k (cost 4000, proceeds 7000) + 0.05 @ 60k (cost 3000, proceeds 3500) = 3000 + 500
+        BigDecimal totalGain = lots.stream().map(MatchedLot::getGainLossEur).reduce(BigDecimal.ZERO, BigDecimal::add);
+        assertEquals(0, new BigDecimal("3500").compareTo(totalGain.setScale(0, java.math.RoundingMode.HALF_UP)));
+    }
+
+    @Test
+    void bitcoinIDionice_netiraju_seUIstojGodini() {
+        var bBtc = buy("BTC", LocalDateTime.of(2025, 1, 1, 0, 0), "1", "100", BrokerType.STRIKE);
+        var sBtc = sell("BTC", LocalDateTime.of(2025, 5, 1, 0, 0), "1", "300", BrokerType.STRIKE);   // +200
+        var bEtf = buy("ETF", LocalDateTime.of(2025, 1, 1, 0, 0), "1", "100");
+        var sEtf = sell("ETF", LocalDateTime.of(2025, 6, 1, 0, 0), "1", "50");                       // -50
+
+        List<TaxYearSummary> summaries = taxService.calculate(fifoService.match(List.of(bBtc, sBtc, bEtf, sEtf)));
+
+        assertEquals(0, new BigDecimal("150.00").compareTo(summaries.get(0).getNetTaxableBaseEur()));
+    }
 }

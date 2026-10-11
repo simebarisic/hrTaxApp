@@ -6,6 +6,7 @@ const DATE = new Intl.DateTimeFormat('hr-HR', { day: '2-digit', month: '2-digit'
 const BROKERS = [
   { value: 'TRADING212', label: 'Trading212', accept: '.csv,.pdf', hint: 'CSV (Menu → History → Export) ili PDF izvod aktivnosti (eksperimentalno).' },
   { value: 'REVOLUT', label: 'Revolut', accept: '.csv', hint: 'CSV export iz Trading → Statements → Tax Report.' },
+  { value: 'STRIKE', label: 'Strike (Bitcoin)', accept: '.csv', hint: 'CSV export transakcija iz Strikea. Prijenosi na/s cold walleta NISU porezni događaj i preskaču se. Ako nešto ne prođe, vidi Karantenu ili koristi ručni unos ispod.' },
   { value: 'IBKR', label: 'Interactive Brokers', accept: '.csv', hint: 'CSV iz Flex Query (Reports → Flex Queries → Trades). Neverificirano na stvarnim podacima.' },
 ]
 
@@ -28,6 +29,8 @@ export default function App() {
   const [result, setResult] = useState(null)
   const [showTransactions, setShowTransactions] = useState(false)
   const [brokerFilter, setBrokerFilter] = useState('ALL')
+  const [manual, setManual] = useState({ broker: 'STRIKE', type: 'SELL', dateTime: '', ticker: 'BTC', quantity: '', totalEur: '' })
+  const [showManual, setShowManual] = useState(false)
 
   // Pri otvaranju aplikacije odmah ucitaj zadnje stanje iz baze (ako postoji),
   // bez potrebe za novim uploadom.
@@ -72,6 +75,63 @@ export default function App() {
     }
   }
 
+  async function handleManual(e) {
+    e.preventDefault()
+    setError(null)
+    try {
+      const res = await fetch('/api/reports/transactions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          broker: manual.broker,
+          type: manual.type,
+          dateTime: manual.dateTime,
+          ticker: manual.ticker,
+          quantity: manual.quantity,
+          totalEur: manual.totalEur
+        })
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setError(data.error || 'Neispravan unos (provjeri sva polja).')
+      } else {
+        setResult(data)
+        setManual({ ...manual, quantity: '', totalEur: '' })
+      }
+    } catch (err) {
+      setError('Ne mogu se spojiti na backend: ' + err.message)
+    }
+  }
+
+  async function handleDelete(id) {
+    if (!window.confirm('Obrisati ovu transakciju?')) return
+    try {
+      const res = await fetch('/api/reports/transactions/' + id, { method: 'DELETE' })
+      if (res.ok) setResult(await res.json())
+      else setError('Brisanje nije uspjelo.')
+    } catch (err) {
+      setError('Ne mogu se spojiti na backend: ' + err.message)
+    }
+  }
+
+  async function handleDeleteAll() {
+    const n = result?.totalStoredCount ?? 0
+    if (!window.confirm('Obrisati SVE spremljene transakcije (' + n + ', svi brokeri)? Ovo se ne može poništiti. ' +
+        'Preporuka: prvo napravi backup (scripts/backup-db.sh).')) return
+    setError(null)
+    try {
+      const res = await fetch('/api/reports/transactions', { method: 'DELETE' })
+      if (res.ok) {
+        setResult(null)
+        setFile(null)
+      } else {
+        setError('Brisanje nije uspjelo.')
+      }
+    } catch (err) {
+      setError('Ne mogu se spojiti na backend: ' + err.message)
+    }
+  }
+
   const presentBrokers = result ? [...new Set(result.transactions.map(t => t.broker))] : []
   const filteredTransactions = result
     ? (brokerFilter === 'ALL' ? result.transactions : result.transactions.filter(t => t.broker === brokerFilter))
@@ -82,7 +142,7 @@ export default function App() {
       <header>
         <h1>Porez na kapitalnu dobit</h1>
         <p className="subtitle">
-          Uploadaj Trading212 CSV export (Menu → History → Export) i dobij FIFO obračun,
+          Uploadaj export brokera (Trading212, Revolut, IBKR) ili Strike (Bitcoin) i dobij FIFO obračun,
           poreznu obvezu (12%, izuzeće nakon 2 godine) i pripremljene podatke za JOPPD.
         </p>
       </header>
@@ -101,6 +161,11 @@ export default function App() {
           <button type="submit" disabled={!file || loading}>
             {loading ? 'Obrađujem...' : 'Izračunaj porez'}
           </button>
+          {result && result.totalStoredCount > 0 && (
+            <button type="button" className="danger" onClick={handleDeleteAll}>
+              Obriši sve transakcije
+            </button>
+          )}
         </form>
         <p className="hint">{BROKERS.find(b => b.value === broker)?.hint}</p>
         <p className="hint">
@@ -109,6 +174,39 @@ export default function App() {
           se trajno spremaju, pa sljedeći put ne moraš uploadati cijelu povijest — samo
           dodaj export s novijim transakcijama.
         </p>
+      </section>
+
+
+      <section className="card">
+        <h3 style={{ cursor: 'pointer' }} onClick={() => setShowManual(v => !v)}>
+          {showManual ? '▼' : '▶'} Ručni unos kupnje/prodaje (npr. Bitcoin izvan Strikea)
+        </h3>
+        {showManual && (
+          <form onSubmit={handleManual} className="manual-form">
+            <select value={manual.broker} onChange={(e) => setManual({ ...manual, broker: e.target.value })}>
+              {BROKERS.map(b => <option key={b.value} value={b.value}>{b.label}</option>)}
+            </select>
+            <select value={manual.type} onChange={(e) => setManual({ ...manual, type: e.target.value })}>
+              <option value="BUY">Kupnja</option>
+              <option value="SELL">Prodaja</option>
+            </select>
+            <input type="datetime-local" required value={manual.dateTime}
+                   onChange={(e) => setManual({ ...manual, dateTime: e.target.value })} />
+            <input placeholder="Ticker (BTC)" required value={manual.ticker}
+                   onChange={(e) => setManual({ ...manual, ticker: e.target.value })} />
+            <input type="number" step="any" min="0" placeholder="Količina (npr. 0.015)" required value={manual.quantity}
+                   onChange={(e) => setManual({ ...manual, quantity: e.target.value })} />
+            <input type="number" step="any" min="0" placeholder="Ukupno EUR (s naknadom)" required value={manual.totalEur}
+                   onChange={(e) => setManual({ ...manual, totalEur: e.target.value })} />
+            <button type="submit">Dodaj</button>
+          </form>
+        )}
+        {showManual && (
+          <p className="hint">
+            Iznos je ukupno u EUR: kod kupnje ono što si platio, kod prodaje ono što si primio (uključujući naknade).
+            Vrijeme unesi po hrvatskom vremenu. Prijenos BTC-a na cold wallet NE unosiš — nije porezni događaj.
+          </p>
+        )}
       </section>
 
       {initialLoading && <p className="hint">Učitavam spremljeno stanje…</p>}
@@ -281,7 +379,7 @@ export default function App() {
             {showTransactions && (
               <table className="data-table">
                 <thead>
-                  <tr><th>Datum</th><th>Broker</th><th>Tip</th><th>Ticker</th><th>Kol.</th><th>Cijena</th><th>Ukupno (EUR)</th></tr>
+                  <tr><th>Datum</th><th>Broker</th><th>Tip</th><th>Ticker</th><th>Kol.</th><th>Cijena</th><th>Ukupno (EUR)</th><th></th></tr>
                 </thead>
                 <tbody>
                   {filteredTransactions.map((t, i) => (
@@ -293,6 +391,11 @@ export default function App() {
                       <td>{t.quantity}</td>
                       <td>{t.pricePerShare} {t.currency}</td>
                       <td>{fmtEur(t.totalEur)}</td>
+                      <td>
+                        {t.externalId?.startsWith('MANUAL:') && (
+                          <button type="button" onClick={() => handleDelete(t.id)} title="Obriši ručni unos">✕</button>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

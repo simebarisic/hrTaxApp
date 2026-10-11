@@ -1,5 +1,6 @@
 package hr.porezno.taxapp.service;
 
+import hr.porezno.taxapp.model.BrokerType;
 import hr.porezno.taxapp.model.MatchedLot;
 import hr.porezno.taxapp.model.Transaction;
 import hr.porezno.taxapp.model.TransactionType;
@@ -7,11 +8,12 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDateTime;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Deque;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -39,10 +41,31 @@ import java.util.Map;
 @Service
 public class FifoMatchingService {
 
-    public List<MatchedLot> match(List<Transaction> transactions) {
-        List<MatchedLot> result = new ArrayList<>();
+    /** Prodana kolicina za koju u povijesti nema dovoljno kupnji (nepotpuna povijest ili transfer izmedu brokera). */
+    public record Shortfall(String pool, String instrument, BigDecimal quantity, LocalDateTime sellDate) {}
 
-        Map<String, List<Transaction>> byGroup = new HashMap<>();
+    public record MatchResult(List<MatchedLot> lots, List<Shortfall> shortfalls) {}
+
+    /**
+     * Redoslijed unutar iste grupe: vrijeme, pa BUY prije SELL (isti trenutak),
+     * pa redni broj retka i externalId - da rezultat NIJE ovisan o redoslijedu
+     * kojim baza vrati retke s istim timestampom.
+     */
+    private static final Comparator<Transaction> ORDER = Comparator
+            .comparing(Transaction::getDateTime)
+            .thenComparing(tx -> tx.getType() == TransactionType.BUY ? 0 : 1)
+            .thenComparingInt(Transaction::getSourceRowIndex)
+            .thenComparing(Transaction::getExternalId, Comparator.nullsFirst(Comparator.naturalOrder()));
+
+    public List<MatchedLot> match(List<Transaction> transactions) {
+        return matchWithDiagnostics(transactions).lots();
+    }
+
+    public MatchResult matchWithDiagnostics(List<Transaction> transactions) {
+        List<MatchedLot> result = new ArrayList<>();
+        List<Shortfall> shortfalls = new ArrayList<>();
+
+        Map<String, List<Transaction>> byGroup = new LinkedHashMap<>();
         for (Transaction tx : transactions) {
             if (tx.getType() != TransactionType.BUY && tx.getType() != TransactionType.SELL) {
                 continue;
@@ -50,22 +73,33 @@ public class FifoMatchingService {
             String instrumentKey = tx.getLotGroupKey() != null
                     ? tx.getLotGroupKey()
                     : (tx.getIsin() != null ? tx.getIsin() : tx.getTicker());
-            String key = tx.getBroker() + "|" + instrumentKey;
+            String key = poolOf(tx.getBroker()) + "|" + instrumentKey;
             byGroup.computeIfAbsent(key, k -> new ArrayList<>()).add(tx);
         }
 
         for (Map.Entry<String, List<Transaction>> entry : byGroup.entrySet()) {
-            result.addAll(matchForInstrument(entry.getValue()));
+            String[] parts = entry.getKey().split("\\|", 2);
+            result.addAll(matchForInstrument(entry.getValue(), parts[0], parts[1], shortfalls));
         }
 
         result.sort(Comparator.comparing(MatchedLot::getSellDate));
-        return result;
+        return new MatchResult(result, shortfalls);
     }
 
-    private List<MatchedLot> matchForInstrument(List<Transaction> txs) {
+    /**
+     * Dionice/ETF-ovi: odvojen pool po brokeru. Kripto: JEDAN zajednicki pool
+     * ("CRYPTO") neovisno o platformi - BTC kupljen na Strikeu pa prebacen na
+     * cold wallet i ponovno poslan na Strike za prodaju je i dalje isti
+     * "komad" imovine s istim nabavnim datumom/cijenom.
+     */
+    private String poolOf(BrokerType broker) {
+        return broker != null && broker.isCrypto() ? "CRYPTO" : String.valueOf(broker);
+    }
+
+    private List<MatchedLot> matchForInstrument(List<Transaction> txs, String pool, String instrument, List<Shortfall> shortfalls) {
         List<MatchedLot> matches = new ArrayList<>();
         List<Transaction> sorted = txs.stream()
-                .sorted(Comparator.comparing(Transaction::getDateTime))
+                .sorted(ORDER)
                 .toList();
 
         Deque<OpenLot> openLots = new ArrayDeque<>();
@@ -116,10 +150,12 @@ public class FifoMatchingService {
                     }
                 }
 
-                // Ako sellQtyRemaining > 0 ovdje, izvjestaj ima vise prodanih nego
-                // evidentiranih kupljenih jedinica (npr. transfer iz drugog brokera,
-                // ili nepotpuna povijest u uploadanoj datoteci). To se ne moze tiho
-                // ignorirati - flagiramo ga na razini servisa koji poziva ovaj matcher.
+                // Ostatak > 0: prodano je vise nego sto je evidentirano kupljeno u ovom
+                // poolu (transfer iz drugog brokera ili nepotpuna povijest). Ne smije se
+                // tiho ignorirati - vraca se kao Shortfall pa ga controller prikazuje.
+                if (sellQtyRemaining.signum() > 0) {
+                    shortfalls.add(new Shortfall(pool, instrument, sellQtyRemaining, tx.getDateTime()));
+                }
             }
         }
 

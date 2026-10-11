@@ -188,6 +188,9 @@ public class RevolutCsvParser implements StatementParser {
     }
 
     private int parseOtherIncome(List<String> lines, ParseResult result, int rowIndex) throws IOException {
+        // Dvije identicne dividende istog dana (isti ISIN i iznos) ne smiju se spojiti u jednu pri deduplikaciji -
+        // redni broj pojavljivanja unutar datoteke je stabilan i pri ponovnom uploadu iste datoteke.
+        java.util.Map<String, Integer> occurrences = new java.util.HashMap<>();
         for (CSVRecord record : parseCsvLines(lines)) {
             LocalDate date = parseIsoDate(get(record, "Date"));
             String isin = get(record, "ISIN");
@@ -203,7 +206,9 @@ public class RevolutCsvParser implements StatementParser {
             }
 
             ConversionResult conv = convert(netAmount, currency, date);
-            String externalId = "REVOLUT:DIV:" + date + ":" + firstNonNull(isin, ticker) + ":" + netAmount;
+            String baseId = "REVOLUT:DIV:" + date + ":" + firstNonNull(isin, ticker) + ":" + netAmount;
+            int occurrence = occurrences.merge(baseId, 1, Integer::sum);
+            String externalId = occurrence == 1 ? baseId : baseId + "#" + occurrence;
 
             result.addTransaction(Transaction.builder()
                     .externalId(externalId)

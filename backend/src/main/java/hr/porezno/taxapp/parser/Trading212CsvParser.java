@@ -3,6 +3,7 @@ package hr.porezno.taxapp.parser;
 import hr.porezno.taxapp.model.BrokerType;
 import hr.porezno.taxapp.model.Transaction;
 import hr.porezno.taxapp.model.TransactionType;
+import hr.porezno.taxapp.service.HnbExchangeRateService;
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVParser;
 import org.apache.commons.csv.CSVRecord;
@@ -14,10 +15,11 @@ import java.io.InputStreamReader;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.OffsetDateTime;
-import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeFormatterBuilder;
 import java.util.List;
 import java.util.Set;
 
@@ -37,9 +39,22 @@ import java.util.Set;
 @Component
 public class Trading212CsvParser implements StatementParser {
 
-    private static final DateTimeFormatter TIME_FORMAT = new DateTimeFormatterBuilder()
-            .appendPattern("yyyy-MM-dd HH:mm:ss")
-            .toFormatter();
+    /** Trading212 exporta vrijeme u UTC; porezni datum (godina, granica od 2 godine) racuna se po hrvatskom vremenu. */
+    static final ZoneId ZAGREB = ZoneId.of("Europe/Zagreb");
+
+    /**
+     * Akcije koje mijenjaju kolicinu/trosak pozicije (split, spin-off, spajanje...). Parser ih
+     * NE zna obraditi, ali ih ne smije ni tiho odbaciti - idu u karantenu da korisnik zna da
+     * FIFO za taj vrijednosni papir moze biti netocan.
+     */
+    private static final List<String> POSITION_CHANGING_KEYWORDS = List.of(
+            "split", "spin", "merger", "distribution", "consolidation", "reverse", "redemption", "conversion of");
+
+    private final HnbExchangeRateService exchangeRateService;
+
+    public Trading212CsvParser(HnbExchangeRateService exchangeRateService) {
+        this.exchangeRateService = exchangeRateService;
+    }
 
     private static final Set<String> BUY_ACTIONS = Set.of(
             "market buy", "limit buy", "stop buy", "buy"
@@ -85,6 +100,12 @@ public class Trading212CsvParser implements StatementParser {
         // ovo je NAMJERNO filtriranje (ocekivano), ne kvaliteta-podataka problem, pa se
         // ne stavlja u karantenu.
         if (type == TransactionType.OTHER) {
+            String normalized = action.trim().toLowerCase();
+            if (POSITION_CHANGING_KEYWORDS.stream().anyMatch(normalized::contains)) {
+                result.addSkipped(rowIndex, rawContent(record), "Korporativna akcija '" + action.trim()
+                        + "' mijenja poziciju (kolicinu/nabavnu cijenu) ali parser je ne podrzava - provjeri FIFO za "
+                        + "taj vrijednosni papir i po potrebi unesi rucno.");
+            }
             return;
         }
 
@@ -119,8 +140,29 @@ public class Trading212CsvParser implements StatementParser {
             return;
         }
 
-        BigDecimal totalEur = toEur(totalOriginal, exchangeRate, currency);
-        BigDecimal feesEur = toEur(fees, exchangeRate, currency);
+        // "Total" je u valuti stupca "Currency (Total)" (valuta racuna). Ako to nije EUR (npr. GBP/USD racun),
+        // konvertiramo po HNB tecaju na dan transakcije - inace bi se iznos krivo tretirao kao EUR.
+        String totalCurrency = firstNonNull(get(record, "Currency (Total)"), "EUR").toUpperCase();
+        BigDecimal totalEur;
+        BigDecimal feesEur;
+        if ("EUR".equals(totalCurrency)) {
+            totalEur = totalOriginal.setScale(4, RoundingMode.HALF_UP);
+            feesEur = fees.setScale(4, RoundingMode.HALF_UP);
+        } else {
+            LocalDate taxDate = dateTime.toLocalDate();
+            BigDecimal rate = exchangeRateService.getRate(totalCurrency, taxDate);
+            if (rate == null || rate.signum() <= 0) {
+                // Sentinel ZERO: ReportController takve transakcije ne sprema nego salje u karantenu.
+                totalEur = totalOriginal;
+                feesEur = fees;
+                exchangeRate = BigDecimal.ZERO;
+            } else {
+                totalEur = totalOriginal.divide(rate, 4, RoundingMode.HALF_UP);
+                feesEur = fees.divide(rate, 4, RoundingMode.HALF_UP);
+                exchangeRate = rate;
+                currency = totalCurrency;
+            }
+        }
 
         String externalId = get(record, "ID");
         if (externalId == null) {
@@ -176,40 +218,20 @@ public class Trading212CsvParser implements StatementParser {
         return total;
     }
 
-    /**
-     * Trading212 export "Total" je vec u valuti racuna (obicno EUR) kad postoji
-     * Exchange rate kolona koja pokazuje konverziju original->racun valuta.
-     * Ako Exchange rate nije prisutan (1.0 default) i currency nije EUR,
-     * ne mozemo pouzdano konvertirati bez dodatnog izvora tecaja (HNB) -
-     * u tom slucaju vracamo originalni iznos i oznacavamo ga kao "best effort".
-     */
-    private BigDecimal toEur(BigDecimal amount, BigDecimal exchangeRate, String currency) {
-        if (amount == null) return null;
-        if ("EUR".equalsIgnoreCase(currency) || exchangeRate == null) {
-            return amount.setScale(4, RoundingMode.HALF_UP);
-        }
-        // Trading212 "Total" stupac je vec preracunat u valutu racuna u praksi;
-        // ako se ipak treba eksplicitna konverzija, ovdje je mjesto za to.
-        return amount.setScale(4, RoundingMode.HALF_UP);
-    }
-
     private LocalDateTime parseDateTime(String raw) {
         if (raw == null || raw.isBlank()) return null;
         String trimmed = raw.trim();
 
-        // Trading212 export koristi "yyyy-MM-dd HH:mm:ss+00:00" (offset, ne 'Z').
+        // "yyyy-MM-dd HH:mm:ss+00:00" (s offsetom) - preracunaj u hrvatsko vrijeme.
         try {
-            return OffsetDateTime.parse(trimmed.replace(" ", "T")).toLocalDateTime();
+            return OffsetDateTime.parse(trimmed.replace(" ", "T")).atZoneSameInstant(ZAGREB).toLocalDateTime();
         } catch (Exception ignored) {
             // probaj dalje
         }
+        // Bez offseta: stupac je "Time (UTC)", pa se pretpostavlja UTC.
         try {
-            return LocalDateTime.parse(trimmed, TIME_FORMAT);
-        } catch (Exception ignored) {
-            // probaj dalje
-        }
-        try {
-            return LocalDateTime.parse(trimmed);
+            return LocalDateTime.parse(trimmed.replace(" ", "T")).atOffset(ZoneOffset.UTC)
+                    .atZoneSameInstant(ZAGREB).toLocalDateTime();
         } catch (Exception ignored) {
             return null;
         }

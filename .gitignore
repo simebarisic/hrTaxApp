@@ -6,3 +6,5 @@ dist/
 *.iml
 .vscode/
 backups/
+.env
+secrets/

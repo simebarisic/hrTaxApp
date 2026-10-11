@@ -1,15 +1,9 @@
 package hr.porezno.taxapp.controller;
 
 import hr.porezno.taxapp.dto.JoppdYearSummaryDto;
-import hr.porezno.taxapp.model.MatchedLot;
-import hr.porezno.taxapp.model.TaxYearSummary;
-import hr.porezno.taxapp.model.Transaction;
-import hr.porezno.taxapp.repository.TransactionRepository;
-import hr.porezno.taxapp.service.FifoMatchingService;
-import hr.porezno.taxapp.service.JoppdExportService;
 import hr.porezno.taxapp.service.JoppdPdfExportService;
 import hr.porezno.taxapp.service.JoppdXlsxExportService;
-import hr.porezno.taxapp.service.TaxCalculationService;
+import hr.porezno.taxapp.service.TaxReportService;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -32,23 +26,14 @@ import java.util.Map;
 @RequestMapping("/api/reports/export")
 public class ExportController {
 
-    private final TransactionRepository transactionRepository;
-    private final FifoMatchingService fifoMatchingService;
-    private final TaxCalculationService taxCalculationService;
-    private final JoppdExportService joppdExportService;
+    private final TaxReportService taxReportService;
     private final JoppdXlsxExportService xlsxExportService;
     private final JoppdPdfExportService pdfExportService;
 
-    public ExportController(TransactionRepository transactionRepository,
-                             FifoMatchingService fifoMatchingService,
-                             TaxCalculationService taxCalculationService,
-                             JoppdExportService joppdExportService,
+    public ExportController(TaxReportService taxReportService,
                              JoppdXlsxExportService xlsxExportService,
                              JoppdPdfExportService pdfExportService) {
-        this.transactionRepository = transactionRepository;
-        this.fifoMatchingService = fifoMatchingService;
-        this.taxCalculationService = taxCalculationService;
-        this.joppdExportService = joppdExportService;
+        this.taxReportService = taxReportService;
         this.xlsxExportService = xlsxExportService;
         this.pdfExportService = pdfExportService;
     }
@@ -78,10 +63,7 @@ public class ExportController {
     }
 
     private List<JoppdYearSummaryDto> computeJoppdSummaries() {
-        List<Transaction> allTransactions = transactionRepository.findAllByOrderByDateTimeAsc();
-        List<MatchedLot> matchedLots = fifoMatchingService.match(allTransactions);
-        List<TaxYearSummary> taxYearSummaries = taxCalculationService.calculate(matchedLots);
-        return joppdExportService.buildSummaries(taxYearSummaries);
+        return taxReportService.buildFromFullHistory().joppdSummaries();
     }
 
     private ResponseEntity<byte[]> fileResponse(byte[] bytes, MediaType contentType, String filename) {

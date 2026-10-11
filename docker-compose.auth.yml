@@ -1,0 +1,9 @@
+# Dodaje HTTP basic auth ispred frontenda (i time ispred API-ja).
+# 1) ./scripts/create-htpasswd.sh <korisnik>   -> stvara secrets/htpasswd
+# 2) docker compose -f docker-compose.yml -f docker-compose.auth.yml up -d --build
+# Preporuka: osim toga stavi TLS (reverse proxy) ili pristupaj samo preko VPN-a, jer basic auth bez TLS-a salje lozinku u cistom tekstu.
+services:
+  frontend:
+    volumes:
+      - ./frontend/nginx.auth.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./secrets/htpasswd:/etc/nginx/.htpasswd:ro

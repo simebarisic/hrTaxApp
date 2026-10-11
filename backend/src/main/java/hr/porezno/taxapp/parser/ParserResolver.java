@@ -15,15 +15,18 @@ public class ParserResolver {
     private final Trading212PdfParser trading212PdfParser;
     private final RevolutCsvParser revolutCsvParser;
     private final IbkrCsvParser ibkrCsvParser;
+    private final StrikeCsvParser strikeCsvParser;
 
     public ParserResolver(Trading212CsvParser trading212CsvParser,
                            Trading212PdfParser trading212PdfParser,
                            RevolutCsvParser revolutCsvParser,
-                           IbkrCsvParser ibkrCsvParser) {
+                           IbkrCsvParser ibkrCsvParser,
+                           StrikeCsvParser strikeCsvParser) {
         this.trading212CsvParser = trading212CsvParser;
         this.trading212PdfParser = trading212PdfParser;
         this.revolutCsvParser = revolutCsvParser;
         this.ibkrCsvParser = ibkrCsvParser;
+        this.strikeCsvParser = strikeCsvParser;
     }
 
     public StatementParser resolve(BrokerType broker, String filenameLower) {
@@ -51,6 +54,10 @@ public class ParserResolver {
                 throw new IllegalArgumentException(
                         "Za IBKR je trenutno podrzan samo CSV export (Flex Query). "
                                 + "PDF/Activity Statement podrska jos nije implementirana.");
+            }
+            case STRIKE -> {
+                if (isCsv) yield strikeCsvParser;
+                throw new IllegalArgumentException("Za Strike je podrzan samo CSV export transakcija.");
             }
         };
     }

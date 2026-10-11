@@ -34,3 +34,8 @@ app:
     # frontend kontejner (8081). Prilagodi preko env varijable
     # APP_CORS_ALLOWED_ORIGINS za drugu domenu/port (npr. produkcija).
     allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:5173,http://localhost:8081}
+  strike:
+    # true  = "Amount EUR" u Strike exportu VEC sadrzi naknadu (ukupno placeno/primljeno)
+    # false = naknada je odvojena: kod kupnje se dodaje, kod prodaje oduzima.
+    # Provjeri na jednoj stvarnoj transakciji i podesi preko APP_STRIKE_FEE_INCLUDED_IN_AMOUNT.
+    fee-included-in-amount: ${APP_STRIKE_FEE_INCLUDED_IN_AMOUNT:true}

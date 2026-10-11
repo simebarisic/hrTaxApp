@@ -86,3 +86,20 @@ button:disabled { background: #9fb0e0; cursor: not-allowed; }
 .broker-breakdown-box { margin-top: 16px; }
 .broker-breakdown-box:first-of-type { margin-top: 4px; }
 .broker-breakdown-box h4 { margin-bottom: 8px; color: #4a5063; }
+
+.manual-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.manual-form input,
+.manual-form select {
+  padding: 6px 8px;
+}
+
+button.danger {
+  background: #b3261e;
+  color: #fff;
+  border-color: #b3261e;
+}
