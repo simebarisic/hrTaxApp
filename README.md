@@ -27,9 +27,9 @@ docker compose up -d --build
 ```
 
 Ovo diže Postgres + backend + frontend zajedno:
-- Frontend: `http://localhost:8081`
-- Backend API: `http://localhost:8080`
-- Postgres: `localhost:5432`
+- Frontend: `http://localhost:3050`
+- Backend API: `http://localhost:8050`
+- Postgres: `localhost:5450`
 (sve samo na localhostu — vidi "Sigurnost")
 
 Shema baze se automatski kreira preko Flyway migracija pri prvom
@@ -115,7 +115,7 @@ netiranje dobitaka/gubitaka unutar godine **zajedno s dionicama**).
 
 Aplikacija **nema autentikaciju**, a drži stvarne financijske podatke.
 
-- `docker-compose.yml` veže Postgres (5432), backend (8080) i frontend (8081) **samo na 127.0.0.1**.
+- `docker-compose.yml` veže Postgres (5450), backend (8050) i frontend (3050) **samo na 127.0.0.1**.
 - Lozinka baze se čita iz `.env` (kopiraj `.env.example` → `.env`); compose se neće pokrenuti bez `DB_PASSWORD`.
 - Za pristup s drugog uređaja (npr. Raspberry Pi homelab): postavi `FRONTEND_BIND=0.0.0.0` u `.env` **i** uključi
   basic auth: `./scripts/create-htpasswd.sh <korisnik>` pa
@@ -151,7 +151,7 @@ vrijeme ne pretvara.
 docker compose up -d postgres
 ```
 
-Diže Postgres na `localhost:5432` (baza `hrtaxapp`, user/pass `hrtaxapp`/`hrtaxapp`).
+Diže Postgres na `localhost:5450` (baza `hrtaxapp`, user/pass `hrtaxapp`/`hrtaxapp`).
 
 ## Pokretanje backenda
 
@@ -160,7 +160,7 @@ za preuzimanje ovisnosti prvi put), pokrenut Postgres (`docker compose up -d pos
 
 ```bash
 cd backend
-mvn spring-boot:run
+DB_PORT=5450 mvn spring-boot:run   # baza iz docker compose je na 127.0.0.1:5450
 ```
 
 Backend se diže na `http://localhost:8080`. Testovi (FIFO + porezni
@@ -233,7 +233,7 @@ prvi `mvn clean install` + stvarni download PDF-a/Excela je pravi test.
 Dopuštena podrijetla za API se konfiguriraju centralno u `CorsConfig`
 (čita `app.cors.allowed-origins`, podesivo preko env varijable
 `APP_CORS_ALLOWED_ORIGINS`), default pokriva Vite dev server (5173),
-alternativni dev port (3000) i Docker/Nginx frontend (8081). Ako
+alternativni dev port (3000) i Docker/Nginx frontend (3050). Ako
 frontend hostaš na drugom portu/domeni, dodaj ga na tu listu — inače
 ćeš dobiti "Invalid CORS request" iako se poziv šalje prema istom
 "vidljivom" originu preko reverse proxyja (preglednik svejedno šalje
