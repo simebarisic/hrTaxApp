@@ -20,4 +20,7 @@ RUN addgroup -S app && adduser -S app -G app
 USER app
 
 EXPOSE 8080
+# Heap do 75% limita kontejnera (mem_limit u composeu); bez limita bi JVM uzeo
+# četvrtinu RAM-a cijelog servera, a više takvih backenda zajedno ga može srušiti.
+ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75"
 ENTRYPOINT ["java", "-jar", "app.jar"]
